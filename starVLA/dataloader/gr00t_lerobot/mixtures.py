@@ -90,6 +90,14 @@ DATASET_NAMED_MIXTURES = {
         ("arx_x5", 1.0, "arx_x5"),
     ],
 
+    "gravity_single4il": [
+        ("gravity_single4IL", 1.0, "gravity_single_joint", "v3.0"),
+    ],
+
+    "dual_fold_blanket": [
+        ("dual_fold_blanket", 1.0, "arx_x5", "v3.0"),
+    ],
+
     "robotwin_all": [
         ("Clean/adjust_bottle", 1.0, "robotwin"),
         ("Clean/beat_block_hammer", 1.0, "robotwin"),
@@ -358,5 +366,28 @@ DATASET_NAMED_MIXTURES = {
     "multi_robot": [
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         # ("OXE_LEROBOT_DATASET/bridge_orig_1.0.0_lerobot", 1.0, "oxe_bridge"),
+    ],
+
+    # ---------------------------------------------------------------------------
+    # VLA-Arena dataset mixtures
+    # Dataset root: playground/Datasets/VLA_ARENA_LEROBOT_DATA/
+    # Each entry is (dataset_folder_name, sampling_weight, robot_config).
+    # Robot config "vla_arena_franka" covers the mounted Panda used in VLA-Arena.
+    #
+    # Official HuggingFace repos (downloaded by data_preparation.sh):
+    #   VLA-Arena/VLA_Arena_L0_S_lerobot_openpi  (Small)
+    #   VLA-Arena/VLA_Arena_L0_M_lerobot_openpi  (Medium)
+    #   VLA-Arena/VLA_Arena_L0_L_lerobot_openpi  (Large)
+    # ---------------------------------------------------------------------------
+
+    # --- L0 splits (downloaded from HuggingFace) ---
+    "vla_arena_L0_S": [
+        ("VLA_Arena_L0_S_lerobot_openpi", 1.0, "vla_arena_franka"),
+    ],
+    "vla_arena_L0_M": [
+        ("VLA_Arena_L0_M_lerobot_openpi", 1.0, "vla_arena_franka"),
+    ],
+    "vla_arena_L0_L": [
+        ("VLA_Arena_L0_L_lerobot_openpi", 1.0, "vla_arena_franka"),
     ],
 }
