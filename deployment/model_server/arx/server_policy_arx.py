@@ -15,6 +15,27 @@ from deployment.model_server.tools.websocket_policy_server import WebsocketPolic
 from starVLA.model.framework.base_framework import baseframework
 
 
+def parse_camera_keys(raw_value: str) -> tuple[str, ...] | None:
+    camera_keys = tuple(key.strip() for key in raw_value.split(",") if key.strip())
+    return camera_keys or None
+
+
+def coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() not in {"", "0", "false", "none", "no"}
+
+
+def normalize_image_size(value) -> list[int] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return [int(value[0]), int(value[1])]
+    return None
+
+
 class JointActionPolicyWrapper:
     """Wrap a StarVLA checkpoint and return both normalized and raw joint actions."""
 
@@ -73,6 +94,12 @@ def build_argparser():
         default=None,
         help="Override the checkpoint's flow-matching inference steps at deployment time.",
     )
+    parser.add_argument(
+        "--camera_keys",
+        type=str,
+        default="",
+        help="Optional comma-separated camera names to expose in server metadata for client validation.",
+    )
     return parser
 
 
@@ -104,6 +131,13 @@ def main(args) -> None:
         policy.policy.action_model.num_inference_timesteps,
     )
 
+    action_cfg = policy.policy.config.framework.action_model
+    dataset_cfg = getattr(policy.policy.config.datasets, "vla_data", None)
+    server_camera_keys = parse_camera_keys(args.camera_keys)
+    include_state = coerce_bool(getattr(dataset_cfg, "include_state", None))
+    image_size = normalize_image_size(getattr(dataset_cfg, "image_size", None))
+    train_obs_keys = list(getattr(dataset_cfg, "obs", []) or []) if dataset_cfg is not None else []
+
     server = WebsocketPolicyServer(
         policy=policy,
         host=args.host,
@@ -114,6 +148,13 @@ def main(args) -> None:
             "unnorm_key": policy.unnorm_key,
             "normalization_mode": args.normalization_mode,
             "action_chunk_size": policy.action_chunk_size,
+            "action_dim": int(getattr(action_cfg, "action_dim", 0) or 0),
+            "state_dim": int(getattr(action_cfg, "state_dim", 0) or 0),
+            "include_state": include_state,
+            "image_size": image_size,
+            "train_obs_keys": train_obs_keys,
+            "camera_keys": list(server_camera_keys) if server_camera_keys is not None else None,
+            "num_cameras": len(server_camera_keys) if server_camera_keys is not None else None,
             "num_inference_timesteps": policy.policy.action_model.num_inference_timesteps,
         },
     )

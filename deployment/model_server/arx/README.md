@@ -1,176 +1,161 @@
-# ARX / Gravity Single Deployment
+# ARX Deployment
 
-This deployment flow is tailored to the single-arm, 7D joint-action policy trained on:
+This directory contains the deployment flow for ARX robot-side execution with a
+remote StarVLA policy server.
 
-- two RGB images: `cam_high`, `cam_right_wrist`
-- one 7D state vector: `[joint_0 ... joint_5, gripper]`
-- one 7D action vector: `[joint_0 ... joint_5, gripper]`
+The current path is:
+
+- the GPU machine runs `server_policy_arx.py`
+- the robot machine runs `client_policy_arx.py`
+- the two sides communicate through websocket
+- in practice, the robot machine should usually connect through an SSH local tunnel
+
+The deployment code now supports configurable:
+
+- camera selection through `--camera_keys`
+- single-arm or dual-arm execution through `--arm_side`
+- optional state input through `--no_state`
+
+If the client-side configuration does not match the server-side policy metadata,
+the client should fail early instead of silently running with the wrong setup.
 
 ## Files
 
-- `server_policy_arx.py`: start the policy server on the GPU machine
-- `client_policy_arx.py`: robot-side deployment loop with a single adapter class to fill in
-- `remote_arx_client_pseudocode.py`: robot-side pseudocode template
-- `joint_action_utils.py`: server-side action unnormalization / schedule helpers
-- `run_server_arx.sh`: local helper script to start the server
-- `run_client_arx.sh`: robot-side helper script
+- `server_policy_arx.py`: policy server entrypoint on the GPU machine
+- `client_policy_arx.py`: robot-side deployment loop
+- `joint_action_utils.py`: action chunk sizing and action unnormalization helpers
+- `run_server_arx.sh`: helper script for launching the server
+- `run_client_arx.sh`: helper script for launching the client
 
-## Start The Policy Server
+## Server Responsibilities
 
-```bash
-bash deployment/model_server/arx/run_server_arx.sh
-```
+The server loads the checkpoint, runs `predict_action`, and returns:
 
-Or run manually:
-
-```bash
-CUDA_VISIBLE_DEVICES=5 /data/yxz/conda/envs/starVLA/bin/python deployment/model_server/arx/server_policy_arx.py \
-  --ckpt_path /path/to/steps_10000_pytorch_model.pt \
-  --port 10093 \
-  --use_bf16 \
-  --num_inference_timesteps_override 4
-```
-
-The checkpoint path must point to the `.pt` file inside the run directory. The server also expects:
-
-- `config.yaml`
-- `dataset_statistics.json`
-
-to exist under the same run folder.
-
-## What The Server Returns
-
-The base model predicts `normalized_actions`.
-
-The ARX server additionally returns:
-
-- `raw_actions`: action chunk after unnormalization
+- `raw_actions`
 - `action_chunk_size`
-- `unnorm_key`
+- `action_dim`
+- `state_dim`
+- `include_state`
 - `normalization_mode`
+- `unnorm_key`
 - `num_inference_timesteps`
+- optionally `camera_keys`
 
-For your robot-side integration, use `raw_actions` directly.
-The robot-side client no longer needs the checkpoint path and will raise an error if the server does not return `raw_actions`.
+Use `raw_actions` directly on the robot side. The client does not need local
+checkpoint files.
 
-## Robot-Side Request Contract
+## Client Responsibilities
 
-The request should look like:
+The client is responsible for:
+
+- capturing the selected camera views in the exact order of `--camera_keys`
+- optionally collecting state
+- sending `image` and `lang`, and optionally `state`
+- executing the returned `raw_actions`
+- validating that client-side settings match server-side metadata
+
+## Request Contract
+
+The request sent to the server looks like:
 
 ```python
 {
     "examples": [{
-        "image": [cam_high, cam_right_wrist],
+        "image": [img_0, img_1, img_2],
         "lang": task_prompt,
-        "state": state[None, :]
-    }]
+        "state": state[None, :],  # only when state is enabled
+    }],
+    "do_sample": False,
 }
 ```
 
-Required conventions:
+Notes:
 
-- image order:
-  - `cam_high`
-  - `cam_right_wrist`
-- state order:
-  - `joint_0`
-  - `joint_1`
-  - `joint_2`
-  - `joint_3`
-  - `joint_4`
-  - `joint_5`
-  - `gripper`
+- `image` is an ordered list, not a dict
+- image order must match `--camera_keys`
+- `state` must be omitted when `--no_state` is used
 
-## Robot-Side Integration
+## Recommended Runtime Defaults
 
-If you want the fewest changes on the robot machine, edit only:
+For current ARX deployment:
 
-- `deployment/model_server/arx/client_policy_arx.py`
+- dataset fps: `20`
+- control dt: `0.05`
+- execute horizon: `4`
+- chunk length: `16`
+- inference steps: `4`
 
-Inside that file, replace `PlaceholderARXRobotAdapter` with your real implementation for:
+This means:
 
-- `reset(task_prompt)`
-- `get_images()`
-- `get_state()`
-- `step_joint(action)`
-- optionally `should_stop(step_idx)`
+- the server predicts a 16-step action chunk
+- the client executes the first 4 actions
+- the client then re-queries the server
 
-Then start the robot-side loop with:
+## Dual Fold Blanket V2 Example
+
+The following example matches the current dual-arm blanket setup:
+
+- checkpoint:
+  `/data/yxz/starvla/outputs/dual_fold_blanket_v2_qwen3gr00t_50k/checkpoints/steps_50000_pytorch_model.pt`
+- dataset:
+  `/data/yxz/datasets/dual_fold_blanket_v2`
+- action dimension: `14`
+- state dimension: `14`
+- camera keys:
+  - `camera_h`
+  - `camera_l`
+  - `camera_r`
+- deployment mode:
+  - dual arm: `--arm_side both`
+  - no state to action head: `--no_state`
+
+## Start The Policy Server
+
+Run this on the GPU machine:
 
 ```bash
-bash deployment/model_server/arx/run_client_arx.sh
+CUDA_VISIBLE_DEVICES=5 /data/yxz/conda/envs/starVLA/bin/python \
+  /home/yxz/starVLA-yxz/deployment/model_server/arx/server_policy_arx.py \
+  --ckpt_path /data/yxz/starvla/outputs/dual_fold_blanket_v2_qwen3gr00t_50k/checkpoints/steps_50000_pytorch_model.pt \
+  --port 10093 \
+  --use_bf16 \
+  --num_inference_timesteps_override 4 \
+  --camera_keys camera_h,camera_l,camera_r
 ```
 
-Or manually:
+Why `--camera_keys` is recommended:
+
+- it is not strictly required for server inference
+- but it lets the server expose the expected camera order in metadata
+- then the client can fail fast if camera order or camera count is wrong
+
+The checkpoint run directory must also contain:
+
+- `config.yaml`
+- `dataset_statistics.json`
+
+## Check The Server Port
+
+On the GPU machine, verify that the server is listening:
 
 ```bash
-python deployment/model_server/arx/client_policy_arx.py \
-  --policy_host <server_ip> \
-  --policy_port 10093 \
-  --control_dt 0.05 \
-  --execute_horizon 4 \
-  --max_episode_steps 400 \
-  --task_prompt "your task prompt"
+ss -ltnp | grep 10093
 ```
 
-## Recommended Deployment Settings
+You should see a `LISTEN` entry for port `10093`.
 
-For the current trained model:
+## SSH Tunnel
 
-- action chunk size: `16`
-- recommended client `control_dt`: `0.05s`
-- recommended execute horizon: `4`
-- recommended policy query frequency: about `5 Hz`
-- recommended flow-matching inference steps: `4`
+The robot machine should usually not connect to the public inference port
+directly. Instead, create a local SSH tunnel on the robot machine.
 
-Meaning:
+In this setup:
 
-- the policy predicts a 16-step action chunk
-- you execute only the first 4 steps
-- then you re-query the policy
+- SSH entrypoint of the server machine: `112.25.93.66:5054`
+- server websocket port on the GPU machine: `10093`
+- local forwarded port on the robot machine: `10093`
 
-`execute_horizon` is a robot-side control-loop choice.
-The server only returns the trained chunk size and the action outputs.
-The client chooses its own `control_dt` and how many steps to execute before re-querying.
-
-This is a good starting point because it balances:
-
-- inference latency
-- network latency
-- closed-loop replanning frequency
-
-If inference is too slow:
-
-- increase `execute_horizon` to `6` or `8`
-- or reduce `num_inference_timesteps_override` to `2` or `3`
-
-If control feels too open-loop:
-
-- reduce `execute_horizon` back toward `4`
-- or try `num_inference_timesteps_override=6`
-
-## Deployment Requirements Checklist
-
-Server-side machine:
-
-- trained checkpoint `.pt`
-- matching `config.yaml`
-- matching `dataset_statistics.json`
-- `starVLA` conda environment
-- GPU with enough memory for Qwen3-VL + QwenGR00T
-
-Robot-side machine:
-
-- can capture the two RGB images
-- can read the current 7D robot state
-- can execute `step_joint(action)`
-- can send websocket messages to the server machine
-- can provide the task string explicitly as `lang`
-- does not need a local StarVLA checkpoint
-
-You should make a ssh tunnel from the robot machine to the server machine for secure communication:
-
-usage as an example:
+Run this on the robot machine:
 
 ```bash
 ssh -N \
@@ -180,3 +165,109 @@ ssh -N \
   -o ServerAliveCountMax=3 \
   yxz@112.25.93.66
 ```
+
+What this means:
+
+- the robot machine listens on local `127.0.0.1:10093`
+- traffic sent there is forwarded through SSH
+- on the remote side it lands on `127.0.0.1:10093` of the server machine
+
+So after the tunnel is created, the robot-side client should connect to:
+
+- host: `127.0.0.1`
+- port: `10093`
+
+If local port `10093` is already occupied on the robot machine, use another
+local port such as `11093`:
+
+```bash
+ssh -N \
+  -L 11093:127.0.0.1:10093 \
+  -p 5054 \
+  -o ServerAliveInterval=60 \
+  -o ServerAliveCountMax=3 \
+  yxz@112.25.93.66
+```
+
+Then run the client with `--policy_port 11093`.
+
+## Verify The Tunnel
+
+On the robot machine, after starting the tunnel, verify connectivity:
+
+```bash
+nc -vz 127.0.0.1 10093
+```
+
+If successful, you should see a message similar to:
+
+```text
+Connection to 127.0.0.1 10093 port [tcp/*] succeeded!
+```
+
+You can also check whether the local forwarded port is listening:
+
+```bash
+ss -ltnp | grep 10093
+```
+
+## Start The Robot Client
+
+Run this on the robot machine after the tunnel is up:
+
+```bash
+python3 deployment/model_server/arx/client_policy_arx.py \
+  --policy_host 127.0.0.1 \
+  --policy_port 10093 \
+  --control_dt 0.05 \
+  --execute_horizon 4 \
+  --max_episode_steps 200 \
+  --task_prompt "dual fold blanket" \
+  --arm_side both \
+  --camera_keys camera_h,camera_l,camera_r \
+  --image_size 640,480 \
+  --no_state
+```
+
+Important:
+
+- do not set `--policy_host` to the public server IP when using the tunnel
+- when the tunnel is active, the client should always connect to local
+  `127.0.0.1:<forwarded_port>`
+
+## Live Deployment Checklist
+
+GPU machine:
+
+- checkpoint `.pt` exists
+- matching `config.yaml` exists
+- matching `dataset_statistics.json` exists
+- server process is listening on port `10093`
+
+Robot machine:
+
+- can import the ARX SDK used by `client_policy_arx.py`
+- can capture the selected camera views
+- camera order matches `--camera_keys`
+- can execute dual-arm control when `--arm_side both` is used
+- tunnel is active
+- `nc -vz 127.0.0.1 10093` succeeds before starting the client
+
+## Common Failure Modes
+
+- Wrong camera order:
+  the client may now fail early if server metadata says the deployment expects
+  `camera_h,camera_l,camera_r` but the client is configured differently.
+
+- Wrong arm mode:
+  `--arm_side both` expects a 14D action layout. If the server exposes a
+  single-arm policy, the client should reject it.
+
+- State mismatch:
+  for this blanket setup, use `--no_state`. If the client tries to send state
+  while the deployment is configured as state-free, the metadata check should
+  reject it.
+
+- Tunnel confusion:
+  if you use SSH port forwarding, the client does not connect to the public IP.
+  It connects to its own local forwarded port.
