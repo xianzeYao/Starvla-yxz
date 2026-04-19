@@ -223,5 +223,5 @@ MUJOCO_LOG.TXT
 examples/MultiRobot/*
 
 analysis/*
-
+slurm/*
 AGENTS.md
