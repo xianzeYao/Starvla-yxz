@@ -804,8 +804,8 @@ class ArxX5DataConfig:
                 normalization_modes={
                     "state.left_joints": "min_max",
                     "state.right_joints": "min_max",
-                    "state.left_gripper": "binary",
-                    "state.right_gripper": "binary",
+                    "state.left_gripper": "min_max",
+                    "state.right_gripper": "min_max",
                 },
             ),
             # action transforms
@@ -815,8 +815,8 @@ class ArxX5DataConfig:
                 normalization_modes={
                     "action.left_joints": "min_max",
                     "action.right_joints": "min_max",
-                    "action.left_gripper": "binary",
-                    "action.right_gripper": "binary",
+                    "action.left_gripper": "min_max",
+                    "action.right_gripper": "min_max",
                 },
             ),
         ]
