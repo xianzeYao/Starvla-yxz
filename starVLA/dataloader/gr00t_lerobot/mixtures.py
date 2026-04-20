@@ -102,6 +102,10 @@ DATASET_NAMED_MIXTURES = {
         ("dual_fold_blanket_v2", 1.0, "arx_x5", "v3.0"),
     ],
 
+    "dual_fold_blanket_v3": [
+        ("dual_fold_blanket_v3", 1.0, "arx_x5", "v3.0"),
+    ],
+
     "robotwin_all": [
         ("Clean/adjust_bottle", 1.0, "robotwin"),
         ("Clean/beat_block_hammer", 1.0, "robotwin"),
