@@ -17,8 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from deployment.model_server.arx.client_utils import (
+from client_utils import (
+    apply_action_smoothing,
+    blend_alpha_for_chunk_step,
     build_deployment_config_from_args,
+    compute_boundary_jump_norm,
     configure_logging,
     connect_policy_client,
     dual_arm_model_order_to_robot_order,
@@ -241,8 +244,9 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--camera_keys", type=str, default="camera_h,camera_r")
     parser.add_argument("--image_size", type=str, default="640,480")
     parser.add_argument("--no_state", action="store_true")
+    parser.add_argument("--blend_steps", type=int, default=3)
     parser.add_argument("--dataset_root", "--smoke_test", dest="dataset_root", type=str, required=True)
-    parser.add_argument("--output_dir", type=str, default="deployment/dryrun_records/arx_smoke_test")
+    parser.add_argument("--output_dir", type=str, default="Deployment/dryrun_records/arx_smoke_test")
     parser.add_argument("--episode_index", type=int, default=None)
     parser.add_argument("--video_backend", type=str, default="pyav")
     parser.add_argument("--random_seed", type=int, default=None)
@@ -313,6 +317,7 @@ def run_smoke_test(args: argparse.Namespace) -> None:
         episode_start_ts = scalar_value(dataset[0]["timestamp"])
         records: list[dict[str, Any]] = []
         step_idx = 0
+        last_sent_action: np.ndarray | None = None
 
         while step_idx < total_steps:
             item = dataset[step_idx]
@@ -325,6 +330,7 @@ def run_smoke_test(args: argparse.Namespace) -> None:
             query_start = time.perf_counter()
             action_chunk = query_policy(client, images, state, prompt, cfg=cfg, metadata=metadata)
             latency_ms = (time.perf_counter() - query_start) * 1000.0
+            raw_boundary_jump = compute_boundary_jump_norm(action_chunk[0], last_sent_action)
 
             execute_count = min(cfg.execute_horizon, len(action_chunk), total_steps - step_idx)
             if execute_count <= 0:
@@ -334,12 +340,22 @@ def run_smoke_test(args: argparse.Namespace) -> None:
                 dataset_step = step_idx + local_idx
                 current_item = item if local_idx == 0 else dataset[dataset_step]
                 gt_action = vector_value(current_item["action"])
-                pred_action = np.asarray(action_chunk[local_idx], dtype=np.float32).reshape(-1)
-                if cfg.arm_side == "both" and pred_action.shape[0] == 14 and gt_action.shape[0] == 14:
-                    pred_action = dual_arm_model_order_to_robot_order(pred_action)
-                if pred_action.shape != gt_action.shape:
+                raw_pred_action = np.asarray(action_chunk[local_idx], dtype=np.float32).reshape(-1)
+                blend_alpha = blend_alpha_for_chunk_step(local_idx, cfg.blend_steps)
+                pred_action_model_order = apply_action_smoothing(
+                    raw_pred_action,
+                    last_sent_action,
+                    cfg,
+                    blend_alpha=blend_alpha,
+                )
+                last_sent_action = pred_action_model_order
+
+                pred_action_eval = pred_action_model_order
+                if cfg.arm_side == "both" and pred_action_eval.shape[0] == 14 and gt_action.shape[0] == 14:
+                    pred_action_eval = dual_arm_model_order_to_robot_order(pred_action_eval)
+                if pred_action_eval.shape != gt_action.shape:
                     raise RuntimeError(
-                        f"Predicted action shape {pred_action.shape} does not match gt {gt_action.shape}"
+                        f"Predicted action shape {pred_action_eval.shape} does not match gt {gt_action.shape}"
                     )
 
                 records.append(
@@ -354,14 +370,19 @@ def run_smoke_test(args: argparse.Namespace) -> None:
                         "latency_ms": latency_ms,
                         "task": get_dataset_task(current_item, prompt),
                         "gt_action": gt_action,
-                        "pred_action": pred_action,
-                        "abs_error": np.abs(pred_action - gt_action),
+                        "pred_action": pred_action_eval,
+                        "pred_action_model_order": pred_action_model_order,
+                        "abs_error": np.abs(pred_action_eval - gt_action),
                     }
                 )
 
             step_idx += execute_count
+            boundary_jump_text = (
+                f"{raw_boundary_jump:.4f}" if raw_boundary_jump is not None else "n/a"
+            )
             print(
-                f"[smoke] step={step_idx}/{total_steps} query_latency={latency_ms:.2f}ms execute_count={execute_count}",
+                f"[smoke] step={step_idx}/{total_steps} query_latency={latency_ms:.2f}ms "
+                f"execute_count={execute_count} raw_boundary_jump={boundary_jump_text}",
                 flush=True,
             )
 
@@ -392,6 +413,7 @@ def run_smoke_test(args: argparse.Namespace) -> None:
             "chunk_method": "replace",
             "control_dt": float(cfg.control_dt),
             "execute_horizon": int(cfg.execute_horizon),
+            "blend_steps": int(cfg.blend_steps),
             "max_episode_steps": int(cfg.max_episode_steps),
             "arm_side": cfg.arm_side,
             "camera_keys": list(cfg.camera_keys),

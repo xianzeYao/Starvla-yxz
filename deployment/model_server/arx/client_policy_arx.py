@@ -12,8 +12,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from deployment.model_server.arx.client_utils import (
+    apply_action_smoothing,
+    blend_alpha_for_chunk_step,
     build_control_payload,
     build_deployment_config_from_args,
+    compute_boundary_jump_norm,
     capture_live_observation,
     close_arx_env,
     configure_logging,
@@ -36,6 +39,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--camera_keys", type=str, default="camera_h,camera_r")
     parser.add_argument("--image_size", type=str, default="640,480")
     parser.add_argument("--no_state", action="store_true")
+    parser.add_argument("--blend_steps", type=int, default=3)
     parser.add_argument("--log_level", type=str, default="INFO")
     return parser
 
@@ -49,27 +53,41 @@ def run_live_policy(args: argparse.Namespace) -> None:
         arx.reset()
 
         step_idx = 0
+        last_sent_action: np.ndarray | None = None
         while step_idx < cfg.max_episode_steps:
             images, state = capture_live_observation(arx, cfg)
 
             query_start = time.perf_counter()
             action_chunk = query_policy(client, images, state, cfg.task_prompt, cfg=cfg, metadata=metadata)
             query_latency = time.perf_counter() - query_start
+            raw_boundary_jump = compute_boundary_jump_norm(action_chunk[0], last_sent_action)
 
             execute_count = min(cfg.execute_horizon, len(action_chunk), cfg.max_episode_steps - step_idx)
             for local_idx in range(execute_count):
-                action = np.asarray(action_chunk[local_idx], dtype=np.float32).reshape(-1)
+                raw_action = np.asarray(action_chunk[local_idx], dtype=np.float32).reshape(-1)
+                blend_alpha = blend_alpha_for_chunk_step(local_idx, cfg.blend_steps)
+                action = apply_action_smoothing(
+                    raw_action,
+                    last_sent_action,
+                    cfg,
+                    blend_alpha=blend_alpha,
+                )
                 action_start = time.perf_counter()
                 arx.step_raw_joint(build_control_payload(action, cfg.arm_side))
+                last_sent_action = action
                 step_idx += 1
 
                 sleep_time = max(0.0, cfg.control_dt - (time.perf_counter() - action_start))
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
+            boundary_jump_text = (
+                f"{raw_boundary_jump:.4f}" if raw_boundary_jump is not None else "n/a"
+            )
             print(
                 f"[live] step={step_idx} query_latency={query_latency:.3f}s "
-                f"execute_count={execute_count} action_chunk_size={action_chunk_size}",
+                f"execute_count={execute_count} action_chunk_size={action_chunk_size} "
+                f"raw_boundary_jump={boundary_jump_text}",
                 flush=True,
             )
     finally:

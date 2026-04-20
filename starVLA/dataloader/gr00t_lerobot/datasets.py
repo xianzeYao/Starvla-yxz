@@ -50,6 +50,7 @@ from starVLA.dataloader.gr00t_lerobot.schema import (
     LeRobotStateActionMetadata,
 )
 from starVLA.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
+from starVLA.dataloader.gr00t_lerobot.transform.state_action import StateActionTransform
 
 from functools import partial
 from typing import Tuple, List
@@ -1811,6 +1812,9 @@ class LeRobotSingleDataset(Dataset):
         # Organize statistics by tag
         tag = self.tag
         tag_stats = {}
+        action_normalization_modes = get_action_normalization_modes_for_used_keys(
+            self.transforms, used_action_keys
+        )
         
         # Process action statistics (only for used keys)
         if hasattr(self.metadata.statistics, 'action') and self.metadata.statistics.action:
@@ -1838,9 +1842,11 @@ class LeRobotSingleDataset(Dataset):
                 # Combine statistics from filtered action sub-keys
                 combined_action_stats = combine_modality_stats(filtered_action_stats)
                 
-                # Add mask field based on whether it's gripper or not
+                # Match deployment unnormalization to the active action normalization modes.
                 mask = generate_action_mask_for_used_keys(
-                    self.metadata.modalities.action, filtered_action_stats.keys()
+                    self.metadata.modalities.action,
+                    filtered_action_stats.keys(),
+                    action_normalization_modes,
                 )
                 combined_action_stats["mask"] = mask
                 
@@ -2046,19 +2052,53 @@ def combine_modality_stats(modality_stats: dict) -> dict:
     
     return combined_stats
 
-def generate_action_mask_for_used_keys(action_modalities: dict, used_action_keys_ordered) -> list[bool]:
+def get_action_normalization_modes_for_used_keys(
+    transforms: ComposedModalityTransform,
+    used_action_keys_ordered,
+) -> dict[str, str]:
+    """Extract action normalization modes from the active transform pipeline."""
+    normalization_modes = {}
+
+    transform_list = transforms.transforms if hasattr(transforms, "transforms") else [transforms]
+    used_action_keys = set(used_action_keys_ordered)
+
+    for transform in transform_list:
+        if not isinstance(transform, StateActionTransform):
+            continue
+        if not any(key.startswith("action.") for key in transform.apply_to):
+            continue
+
+        for key, mode in transform.normalization_modes.items():
+            clean_key = key.replace("action.", "", 1) if key.startswith("action.") else key
+            if clean_key in used_action_keys:
+                normalization_modes[clean_key] = mode
+
+    return normalization_modes
+
+
+def generate_action_mask_for_used_keys(
+    action_modalities: dict,
+    used_action_keys_ordered,
+    action_normalization_modes: dict[str, str] | None = None,
+) -> list[bool]:
     """
-    Generate mask based on action modalities, but only for used keys.
-    Gripper-related are False, others are True.
+    Generate a statistics mask for used action keys.
+
+    Dimensions using binary normalization are marked False because they should
+    not be inverse-min-max normalized during deployment. Continuous dimensions
+    remain True.
     
     Args:
         action_modalities (dict): Configuration information for action modalities.
         used_action_keys_ordered: Iterable of actually used action keys in the correct order.
+        action_normalization_modes: Mapping from clean action key name to its
+            configured normalization mode.
         
     Returns:
         list[bool]: List of mask values
     """
     mask = []
+    action_normalization_modes = action_normalization_modes or {}
     
     # Generate mask in the same order as the statistics were combined
     for subkey in used_action_keys_ordered:
@@ -2071,12 +2111,11 @@ def generate_action_mask_for_used_keys(action_modalities: dict, used_action_keys
             else:
                 dim_count = 1
             
-            # Check if it's gripper-related
-            is_gripper = "gripper" in subkey.lower()
+            is_binary = action_normalization_modes.get(subkey) == "binary"
             
             # Generate mask value for each dimension
             for _ in range(dim_count):
-                mask.append(not is_gripper)  # gripper is False, others are True
+                mask.append(not is_binary)
     
     return mask
 
@@ -2668,6 +2707,9 @@ class LeRobotMixtureDataset(Dataset):
                     all_used_state_keys.append(used_state_key)
         
         # Organize statistics by tag
+        action_normalization_modes = get_action_normalization_modes_for_used_keys(
+            self.transforms, all_used_action_keys
+        )
         for tag, merged_metadata in self.merged_metadata.items():
             tag_stats = {}
             
@@ -2693,7 +2735,9 @@ class LeRobotMixtureDataset(Dataset):
                     combined_action_stats = combine_modality_stats(filtered_action_stats)
                     
                     mask = generate_action_mask_for_used_keys(
-                        merged_metadata.modalities.action, filtered_action_stats.keys()
+                        merged_metadata.modalities.action,
+                        filtered_action_stats.keys(),
+                        action_normalization_modes,
                     )
                     combined_action_stats["mask"] = mask
                     
@@ -2745,9 +2789,18 @@ class LeRobotMixtureDataset(Dataset):
         """Backward compatibility wrapper."""
         return combine_modality_stats(modality_stats)
 
-    def _generate_action_mask_for_used_keys(self, action_modalities: dict, used_action_keys_ordered) -> list[bool]:
+    def _generate_action_mask_for_used_keys(
+        self,
+        action_modalities: dict,
+        used_action_keys_ordered,
+        action_normalization_modes: dict[str, str] | None = None,
+    ) -> list[bool]:
         """Backward compatibility wrapper."""
-        return generate_action_mask_for_used_keys(action_modalities, used_action_keys_ordered)
+        return generate_action_mask_for_used_keys(
+            action_modalities,
+            used_action_keys_ordered,
+            action_normalization_modes,
+        )
 
     def _get_dataset_counts(self, tag: str) -> dict:
         """

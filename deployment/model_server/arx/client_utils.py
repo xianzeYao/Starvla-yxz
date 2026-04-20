@@ -88,6 +88,7 @@ class DeploymentConfig:
     camera_keys: tuple[str, ...] = DEFAULT_CAMERA_KEYS
     image_size: tuple[int, int] = DEFAULT_IMAGE_SIZE
     include_state: bool = True
+    blend_steps: int = 0
 
 
 def ensure_numpy_available() -> None:
@@ -228,6 +229,8 @@ def validate_execution_config(cfg: DeploymentConfig, action_chunk_size: int) -> 
         raise ValueError("control_dt must be positive")
     if cfg.max_episode_steps <= 0:
         raise ValueError("max_episode_steps must be positive")
+    if cfg.blend_steps < 0:
+        raise ValueError("blend_steps must be non-negative")
 
 
 def validate_server_compatibility(cfg: DeploymentConfig, metadata: dict[str, Any]) -> None:
@@ -322,7 +325,7 @@ def connect_policy_client(cfg: DeploymentConfig) -> tuple[Any, dict[str, Any], i
     logging.info("Server metadata: %s", metadata)
     logging.info(
         "Client config: arm_side=%s camera_keys=%s include_state=%s action_chunk_size=%s "
-        "execute_horizon=%s control_dt=%.4f query_hz=%.3f",
+        "execute_horizon=%s control_dt=%.4f query_hz=%.3f blend_steps=%s",
         cfg.arm_side,
         list(cfg.camera_keys),
         cfg.include_state,
@@ -330,8 +333,46 @@ def connect_policy_client(cfg: DeploymentConfig) -> tuple[Any, dict[str, Any], i
         cfg.execute_horizon,
         cfg.control_dt,
         1.0 / (cfg.control_dt * float(cfg.execute_horizon)),
+        cfg.blend_steps,
     )
     return client, metadata, action_chunk_size
+
+
+def blend_alpha_for_chunk_step(local_idx: int, blend_steps: int) -> float | None:
+    if blend_steps <= 0 or local_idx >= blend_steps:
+        return None
+    return float(local_idx + 1) / float(blend_steps + 1)
+
+
+def apply_action_smoothing(
+    action: np.ndarray,
+    last_sent_action: np.ndarray | None,
+    cfg: DeploymentConfig,
+    *,
+    blend_alpha: float | None = None,
+) -> np.ndarray:
+    smoothed = np.asarray(action, dtype=np.float32).reshape(-1).copy()
+    if last_sent_action is None:
+        return smoothed
+
+    reference = np.asarray(last_sent_action, dtype=np.float32).reshape(-1)
+    if smoothed.shape != reference.shape:
+        return smoothed
+
+    if blend_alpha is not None:
+        alpha = float(np.clip(blend_alpha, 0.0, 1.0))
+        smoothed = ((1.0 - alpha) * reference + alpha * smoothed).astype(np.float32)
+    return smoothed.astype(np.float32)
+
+
+def compute_boundary_jump_norm(action: np.ndarray, last_sent_action: np.ndarray | None) -> float | None:
+    if last_sent_action is None:
+        return None
+    current = np.asarray(action, dtype=np.float32).reshape(-1)
+    reference = np.asarray(last_sent_action, dtype=np.float32).reshape(-1)
+    if current.shape != reference.shape:
+        return None
+    return float(np.linalg.norm(current - reference))
 
 
 def build_request(
@@ -471,4 +512,5 @@ def build_deployment_config_from_args(args: Any) -> DeploymentConfig:
         camera_keys=parse_camera_keys(args.camera_keys),
         image_size=parse_image_size(args.image_size),
         include_state=not args.no_state,
+        blend_steps=getattr(args, "blend_steps", 0),
     )
