@@ -2707,9 +2707,13 @@ class LeRobotMixtureDataset(Dataset):
                     all_used_state_keys.append(used_state_key)
         
         # Organize statistics by tag
-        action_normalization_modes = get_action_normalization_modes_for_used_keys(
-            self.transforms, all_used_action_keys
-        )
+        action_normalization_modes = {}
+        for dataset in self.datasets:
+            action_normalization_modes.update(
+                get_action_normalization_modes_for_used_keys(
+                    dataset.transforms, all_used_action_keys
+                )
+            )
         for tag, merged_metadata in self.merged_metadata.items():
             tag_stats = {}
             
