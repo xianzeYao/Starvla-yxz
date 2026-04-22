@@ -114,9 +114,9 @@ The following example matches the current dual-arm blanket setup:
 Run this on the GPU machine:
 
 ```bash
-CUDA_VISIBLE_DEVICES=5 /data/yxz/conda/envs/starVLA/bin/python \
+CUDA_VISIBLE_DEVICES=1 /data/yxz/conda/envs/starVLA/bin/python \
   /home/yxz/starVLA-yxz/deployment/model_server/arx/server_policy_arx.py \
-  --ckpt_path /data/yxz/starvla/outputs/dual_fold_blanket_v2_qwen3gr00t_50k/checkpoints/steps_50000_pytorch_model.pt \
+  --ckpt_path /data/yxz/starvla/arx/dual_fold_blanket_v3_baseline/checkpoints/steps_50000_pytorch_model.pt \
   --port 10093 \
   --use_bf16 \
   --num_inference_timesteps_override 4 \
