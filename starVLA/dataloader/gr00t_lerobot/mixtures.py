@@ -114,6 +114,10 @@ DATASET_NAMED_MIXTURES = {
         ("take_part_bricks", 1.0, "arx_x5", "v3.0"),
     ],
 
+    "take_part_bricks_v2": [
+        ("take_part_bricks_v2", 1.0, "arx_x5", "v3.0"),
+    ],
+
     "robotwin_all": [
         ("Clean/adjust_bottle", 1.0, "robotwin"),
         ("Clean/beat_block_hammer", 1.0, "robotwin"),

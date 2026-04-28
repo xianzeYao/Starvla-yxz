@@ -1,4 +1,4 @@
-run_id: take_part_bricks_qwen3gr00t_30k
+run_id: take_part_bricks_v2_qwen3gr00t_50k
 run_root_dir: /home/n84416302/ckpts/starvla
 seed: 42
 trackers:
@@ -60,7 +60,7 @@ datasets:
   vla_data:
     dataset_py: lerobot_datasets
     data_root_dir: /home/n84416302/dataset/
-    data_mix: take_part_bricks
+    data_mix: take_part_bricks_v2
     action_type: abs_qpos
     action_mode: abs
     CoT_prompt: Your task is {instruction}. To identify the key objects for your task.
@@ -117,4 +117,4 @@ trainer:
   enable_mixed_precision_training: true
 
 is_resume: false
-output_dir: /home/n84416302/ckpts/starvla/take_part_bricks_qwen3gr00t_30k
+output_dir: /home/n84416302/ckpts/starvla/take_part_bricks_v2_qwen3gr00t_50k
